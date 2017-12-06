@@ -55,8 +55,8 @@ var WireComposer = function (element) {
 		var sourceCell = self.graph.getCell(link.attributes.source.id)
 		var targetCell = self.graph.getCell(link.attributes.target.id)
 		var wire = {
-			emitterPort: 0,
-			receiverPort: 0,
+			emitterPort: link.get('source').port,
+			receiverPort: link.get('target').port,
 			emitterPid: sourceCell.attributes.wireComponent.pid,
 			receiverPid: targetCell.attributes.wireComponent.pid
 		}
@@ -64,10 +64,14 @@ var WireComposer = function (element) {
 		if (!link.attributes.wire) {
 			console.log('wire created:')
 			console.log(wire)
+			console.log(link)
+			console.log(sourceCell)
 			self.dispatchWireCreated(wire)
 		} else {
 			console.log('wire changed:')
 			console.log(wire)
+			console.log(link)
+			console.log(sourceCell)
 			self.dispatchWireChanged(wire)
 		}
 	});
@@ -200,12 +204,12 @@ WireComposer.prototype.addWireComponent = function (component) {
 	
 	var inputPorts = [];
 	for (i = 0; i < component.inputPortCount; i++) { 
-		inputPorts.push("");
+		inputPorts.push("in" + i);
 	}
 	
 	var outputPorts = [];
 	for (i = 0; i < component.outputPortCount; i++) { 
-		outputPorts.push("");
+		outputPorts.push("out" + i);
 	}
 	
 	if (!position) {
@@ -284,10 +288,12 @@ WireComposer.prototype.addWire = function (wire) {
 	if (emitter != null && receiver != null) {
 		var link = new joint.shapes.customLink.Element({
 			source : {
-				id : emitter.id
+				id : emitter.id,
+				port : wire.emitterPort
 			},
 			target : {
-				id : receiver.id
+				id : receiver.id,
+				port : wire.receiverPort
 			},
 			wire: wire
 		});
