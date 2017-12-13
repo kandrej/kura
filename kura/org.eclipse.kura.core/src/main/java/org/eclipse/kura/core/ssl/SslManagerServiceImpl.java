@@ -629,9 +629,10 @@ public class SslManagerServiceImpl implements SslManagerService, ConfigurableCom
             }
         }
 
-        if (oldPassword == null) {
-            logger.warn("null old password");
-            return false;
+        //when given a new keystore location oldPassword is always null
+        if (oldPassword == null && newPassword == null) {
+        		logger.warn("null old and new passwords");
+            	return false;
         }
 
         if (!Arrays.equals(oldPassword, newPassword)) {
