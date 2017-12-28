@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 import org.eclipse.kura.KuraBluetoothIOException;
 import org.eclipse.kura.KuraBluetoothNotificationException;
@@ -125,9 +126,22 @@ public class BluetoothLeGattCharacteristicImpl implements BluetoothLeGattCharact
     public List<BluetoothLeGattCharacteristicProperties> getProperties() {
         List<BluetoothLeGattCharacteristicProperties> properties = new ArrayList<>();
         for (String flag : this.characteristic.getFlags()) {
-            properties.add(BluetoothLeGattCharacteristicProperties.valueOf(flag));
+        	properties.add(properityFromString(flag));
         }
         return properties;
+    }
+    
+    private BluetoothLeGattCharacteristicProperties properityFromString(String flagString) {
+    	if (flagString == null) {
+    		return BluetoothLeGattCharacteristicProperties.UNKNOWN;
+    	}
+    	
+    	String flag = flagString.toUpperCase().replaceAll(Pattern.quote("-"), "_");
+    	try {
+    		return BluetoothLeGattCharacteristicProperties.valueOf(flag);
+    	} catch (IllegalArgumentException e) {
+    		return BluetoothLeGattCharacteristicProperties.UNKNOWN;
+    	}
     }
 
 }
