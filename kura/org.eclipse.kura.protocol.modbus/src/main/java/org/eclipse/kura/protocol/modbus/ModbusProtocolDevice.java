@@ -19,6 +19,7 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
+import java.util.Formatter;
 import java.util.List;
 import java.util.Properties;
 
@@ -329,7 +330,8 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
         InputStream in;
         OutputStream out;
         CommConnection conn = null;
-
+        boolean echo = false;
+        
         public SerialCommunicate(ConnectionFactory connFactory, Properties connectionConfig)
                 throws ModbusProtocolException {
             s_logger.info("Configure serial connection");
@@ -348,6 +350,8 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
                 throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_CONFIGURATION);
             }
 
+            echo = Boolean.parseBoolean(connectionConfig.getProperty("echo"));
+            
             int baud = Integer.valueOf(sBaud).intValue();
             int stop = Integer.valueOf(sStop).intValue();
             int parity = Integer.valueOf(sParity).intValue();
@@ -458,6 +462,47 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
             return ab;
         }
 
+        private void discardRequestEcho(byte[] cmd) throws ModbusProtocolException {
+            int echoIndex = 0;
+            try {
+                byte[] echoData = new byte[cmd.length];
+                while (echoIndex < cmd.length) {
+                    int timeOut = ModbusProtocolDevice.this.m_respTout;
+                    long start = System.currentTimeMillis();
+                    while (this.in.available() == 0) {
+                        try {
+                            Thread.sleep(5);    // avoid a high cpu load
+                        } catch (InterruptedException e) {
+                            throw new ModbusProtocolException(ModbusProtocolErrorCode.TRANSACTION_FAILURE,
+                                    "Thread interrupted");
+                        }
+                
+                        long elapsed = System.currentTimeMillis() - start;
+                        if (elapsed > timeOut) {
+                            String failMsg = "Echo timeout";
+                            s_logger.warn(failMsg + ": " + elapsed);
+                            throw new ModbusProtocolException(ModbusProtocolErrorCode.RESPONSE_TIMEOUT,
+                                    failMsg);
+                        }
+                    }
+                    echoData[echoIndex] = (byte) this.in.read();
+                    if (echoData[echoIndex] != cmd[echoIndex]) {
+                        throw new ModbusProtocolException(ModbusProtocolErrorCode.TRANSACTION_FAILURE,
+                                "Received data is not an echo");
+                    }
+                    echoIndex++;
+                }
+                Formatter formatter = new Formatter();
+                for (byte b : echoData) {
+                    formatter.format("%02x", b);
+                }
+                String hex = formatter.toString();
+                formatter.close();
+                s_logger.debug("Received echo: " + hex);
+            } catch (IOException e) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.TRANSACTION_FAILURE, e.getMessage());
+            }
+        }
         /**
          * msgTransaction must be called with a byte array having two extra
          * bytes for the CRC. It will return a byte array of the response to the
@@ -494,7 +539,11 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
                         this.out.write(cmd, 0, cmd.length);
                         this.out.flush();
                         // outputStream.waitAllSent(respTout);
-
+                        
+                        if (echo) {   
+                            discardRequestEcho(cmd);
+                        }
+                        
                         // wait for and process response
                         byte[] response = new byte[262]; // response buffer
                         int respIndex = 0;
@@ -821,9 +870,9 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
                                 }
                             } else if (respIndex == 9) {
                                 // Check first for an Exception response
-                            	if ((response[7] & 0x80) == 0x80) {                                    
-                            		throw new ModbusProtocolException(ModbusProtocolErrorCode.TRANSACTION_FAILURE,
-                            				"Modbus responds an error = " + String.format("%02X", response[8]));
+                                if ((response[7] & 0x80) == 0x80) {                                    
+                                    throw new ModbusProtocolException(ModbusProtocolErrorCode.TRANSACTION_FAILURE,
+                                            "Modbus responds an error = " + String.format("%02X", response[8]));
                                 } else {
                                     if (response[7] == ModbusFunctionCodes.FORCE_SINGLE_COIL
                                             || response[7] == ModbusFunctionCodes.PRESET_SINGLE_REG
