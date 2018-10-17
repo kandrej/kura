@@ -47,20 +47,12 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
 
     private ConnectionFactory m_connectionFactory;
     private UsbService m_usbService;
-
+    
     static final String PROTOCOL_NAME = "modbus";
     public static final String PROTOCOL_CONNECTION_TYPE_SERIAL = "RS232";
     public static final String PROTOCOL_CONNECTION_TYPE_ETHER_RTU = "TCP-RTU";
     public static final String PROTOCOL_CONNECTION_TYPE_ETHER_TCP = "TCP/IP";
-    private int m_respTout;
-    private int m_txMode;
-    private boolean m_connConfigd = false;
-    private boolean m_protConfigd = false;
-    private String m_connType = null;
-    private Communicate m_comm;
-    private Properties m_modbusProperties = null;
-    private static int transactionIndex = 0;
-
+    
     public void setConnectionFactory(ConnectionFactory connectionFactory) {
         this.m_connectionFactory = connectionFactory;
     }
@@ -77,12 +69,12 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
         this.m_usbService = null;
     }
 
-    private boolean serialPortExists() {
-        if (this.m_modbusProperties == null) {
+    private boolean serialPortExists(Properties modbusProperties) {
+        if (modbusProperties == null) {
             return false;
         }
 
-        String portName = this.m_modbusProperties.getProperty("port");
+        String portName = modbusProperties.getProperty("port");
         if (portName != null) {
             if (portName.contains("/dev/")) {
                 File f = new File(portName);
@@ -96,7 +88,7 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
                         if (portName.equals(u.getUsbPort())) {
                             // replace device number with tty
                             portName = u.getDeviceNode();
-                            this.m_modbusProperties.setProperty("port", portName);
+                            modbusProperties.setProperty("port", portName);
                             return true;
                         }
                     }
@@ -117,11 +109,11 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
 
     protected void deactivate(ComponentContext componentContext) {
         s_logger.info("deactivate...");
-        try {
-            disconnect();
-        } catch (ModbusProtocolException e) {
-            s_logger.error("ModbusProtocolException :  {}", e.getCode());
-        }
+//        try {
+//            disconnect();
+//        } catch (ModbusProtocolException e) {
+//            s_logger.error("ModbusProtocolException :  {}", e.getCode());
+//        }
     }
 
     /**
@@ -192,51 +184,41 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
      * </table>
      */
     @Override
-    public void configureConnection(Properties connectionConfig) throws ModbusProtocolException {
-        if ((this.m_connType = connectionConfig.getProperty("connectionType")) == null) {
+    public ModbusProtocolConnection configureConnection(Properties connectionConfig) throws ModbusProtocolException {
+        String connType = null;
+        if ((connType = connectionConfig.getProperty("connectionType")) == null) {
             throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_CONFIGURATION);
         }
-
-        this.m_modbusProperties = connectionConfig;
 
         String txMode;
         String respTimeout;
-        if (this.m_protConfigd || (txMode = connectionConfig.getProperty("transmissionMode")) == null
+        if ((txMode = connectionConfig.getProperty("transmissionMode")) == null
                 || (respTimeout = connectionConfig.getProperty("respTimeout")) == null) {
             throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_CONFIGURATION);
         }
-        if (txMode.equals(ModbusTransmissionMode.RTU)) {
-            this.m_txMode = ModbusTransmissionMode.RTU_MODE;
-        } else if (txMode.equals(ModbusTransmissionMode.ASCII)) {
-            this.m_txMode = ModbusTransmissionMode.ASCII_MODE;
+        if (!txMode.equals(ModbusTransmissionMode.RTU) && !txMode.equals(ModbusTransmissionMode.ASCII)) {
+            throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_CONFIGURATION);
+        }
+        
+        int respTout = Integer.parseInt(respTimeout);
+        if (respTout < 0) {
+            throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_CONFIGURATION);
+        }
+
+        ModbusProtocolConnection comm = null;
+        if (PROTOCOL_CONNECTION_TYPE_SERIAL.equals(connType)) {
+           if (!serialPortExists(connectionConfig)) {
+               throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_AVAILABLE);
+           }
+           comm = new SerialCommunicate(this.m_connectionFactory, connectionConfig);
+        } else if (PROTOCOL_CONNECTION_TYPE_ETHER_TCP.equals(connType)
+                || PROTOCOL_CONNECTION_TYPE_ETHER_RTU.equals(connType)) {
+            comm = new EthernetCommunicate(this.m_connectionFactory, connectionConfig);
         } else {
             throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_CONFIGURATION);
         }
-        this.m_respTout = Integer.parseInt(respTimeout);
-        if (this.m_respTout < 0) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_CONFIGURATION);
-        }
-        this.m_protConfigd = true;
-
-        if (this.m_connConfigd) {
-            this.m_comm.disconnect();
-            this.m_comm = null;
-            this.m_connConfigd = false;
-        }
-
-        if (PROTOCOL_CONNECTION_TYPE_SERIAL.equals(this.m_connType)) {
-            if (!serialPortExists()) {
-                throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_AVAILABLE);
-            }
-            this.m_comm = new SerialCommunicate(this.m_connectionFactory, connectionConfig);
-        } else if (PROTOCOL_CONNECTION_TYPE_ETHER_TCP.equals(this.m_connType)
-                || PROTOCOL_CONNECTION_TYPE_ETHER_RTU.equals(this.m_connType)) {
-            this.m_comm = new EthernetCommunicate(this.m_connectionFactory, connectionConfig);
-        } else {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_CONFIGURATION);
-        }
-
-        this.m_connConfigd = true;
+        
+        return comm;
     }
 
     /**
@@ -249,37 +231,10 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
         return "modbus";
     }
 
-    @Override
-    public void connect() throws ModbusProtocolException {
-        if (!this.m_connConfigd) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_CONFIGURATION);
-        }
-        this.m_comm.connect();
-    }
-
-    @Override
-    public void disconnect() throws ModbusProtocolException {
-        if (this.m_connConfigd) {
-            this.m_comm.disconnect();
-            this.m_comm = null;
-            this.m_connConfigd = false;
-            s_logger.info("Serial comm disconnected");
-        }
-        this.m_protConfigd = false;
-    }
-
-    @Override
-    public int getConnectStatus() {
-        if (!this.m_connConfigd) {
-            return KuraConnectionStatus.NEVERCONNECTED;
-        }
-        return this.m_comm.getConnectStatus();
-    }
-
     /**
      * The only constructor must be the configuration mechanism
      */
-    abstract private class Communicate {
+    abstract static private class Communicate implements ModbusProtocolConnection {
 
         abstract public void connect();
 
@@ -288,6 +243,587 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
         abstract public int getConnectStatus();
 
         abstract public byte[] msgTransaction(byte[] msg) throws ModbusProtocolException;
+        
+        @Override
+        public boolean[] readCoils(int unitAddr, int dataAddress, int count) throws ModbusProtocolException {
+            if (getConnectStatus() != KuraConnectionStatus.CONNECTED) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
+            }
+
+            boolean[] ret = new boolean[count];
+            int index = 0;
+
+            byte[] resp;
+            /*
+             * construct the command issue and get results
+             */
+            byte[] cmd = new byte[6];
+            cmd[0] = (byte) unitAddr;
+            cmd[1] = (byte) ModbusFunctionCodes.READ_COIL_STATUS;
+            cmd[2] = (byte) (dataAddress / 256);
+            cmd[3] = (byte) (dataAddress % 256);
+            cmd[4] = (byte) (count / 256);
+            cmd[5] = (byte) (count % 256);
+
+            /*
+             * send the message and get the response
+             */
+            resp = msgTransaction(cmd);
+
+            /*
+             * process the response (address & CRC already confirmed)
+             */
+            if (resp.length < 3 || resp.length < (resp[2] & 0xff) + 3) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
+            }
+            if ((resp[2] & 0xff) == (count + 7) / 8) {
+                byte mask = 1;
+                int byteOffset = 3;
+                for (int j = 0; j < count; j++, index++) {
+                    // get this point's value
+                    if ((resp[byteOffset] & mask) == mask) {
+                        ret[index] = true;
+                    } else {
+                        ret[index] = false;
+                    }
+                    // advance the mask and offset index
+                    if ((mask <<= 1) == 0) {
+                        mask = 1;
+                        byteOffset++;
+                    }
+                }
+            } else {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_ADDRESS);
+            }
+
+            return ret;
+        }
+        
+        protected byte asciiLrcCalc(byte[] msg, int len) {
+            char[] ac = new char[2];
+            ac[0] = (char) msg[len - 4];
+            ac[1] = (char) msg[len - 3];
+            String s = new String(ac);
+            byte lrc = (byte) Integer.parseInt(s, 16);
+            return lrc;
+        }
+
+        protected int binLrcCalc(byte[] msg) {
+            int llrc = 0;
+            for (byte element : msg) {
+                llrc += element & 0xff;
+            }
+            llrc = (llrc ^ 0xff) + 1;
+            // byte lrc=(byte)(llrc & 0x0ff);
+            return llrc;
+        }
+
+        /**
+         * convertCommandToAscii: convert a binary command into a standard Modbus
+         * ASCII frame
+         */
+        protected byte[] convertCommandToAscii(byte[] msg) {
+            int lrc = binLrcCalc(msg);
+
+            char[] hexArray = "0123456789ABCDEF".toCharArray();
+            byte[] ab = new byte[msg.length * 2 + 5];
+            ab[0] = ':';
+            int v;
+            for (int i = 0; i < msg.length; i++) {
+                v = msg[i] & 0xff;
+                ab[i * 2 + 1] = (byte) hexArray[v >>> 4];
+                ab[i * 2 + 2] = (byte) hexArray[v & 0x0f];
+            }
+            v = lrc & 0x0ff;
+            ab[ab.length - 4] = (byte) hexArray[v >>> 4];
+            ab[ab.length - 3] = (byte) hexArray[v & 0x0f];
+            ab[ab.length - 2] = 13;
+            ab[ab.length - 1] = 10;
+            return ab;
+        }
+
+        /**
+         * convertAsciiResponseToBin: convert a standard Modbus frame to
+         * byte array
+         */
+        protected byte[] convertAsciiResponseToBin(byte[] msg, int len) {
+            int l = (len - 5) / 2;
+            byte[] ab = new byte[l];
+            char[] ac = new char[2];
+            // String s=new String(msg);
+            for (int i = 0; i < l; i++) {
+                ac[0] = (char) msg[i * 2 + 1];
+                ac[1] = (char) msg[i * 2 + 2];
+                // String s=new String(ac);
+                ab[i] = (byte) Integer.parseInt(new String(ac), 16);
+            }
+            return ab;
+        }
+        
+        @Override
+        public boolean[] readDiscreteInputs(int unitAddr, int dataAddress, int count) throws ModbusProtocolException {
+            if (getConnectStatus() != KuraConnectionStatus.CONNECTED) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
+            }
+
+            boolean[] ret = new boolean[count];
+            int index = 0;
+
+            byte[] resp;
+            /*
+             * construct the command issue and get results
+             */
+            byte[] cmd = new byte[6];
+            cmd[0] = (byte) unitAddr;
+            cmd[1] = (byte) ModbusFunctionCodes.READ_INPUT_STATUS;
+            cmd[2] = (byte) (dataAddress / 256);
+            cmd[3] = (byte) (dataAddress % 256);
+            cmd[4] = (byte) (count / 256);
+            cmd[5] = (byte) (count % 256);
+
+            /*
+             * send the message and get the response
+             */
+            resp = msgTransaction(cmd);
+
+            /*
+             * process the response (address & CRC already confirmed)
+             */
+            if (resp.length < 3 || resp.length < (resp[2] & 0xff) + 3) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
+            }
+            if ((resp[2] & 0xff) == (count + 7) / 8) {
+                byte mask = 1;
+                int byteOffset = 3;
+                for (int j = 0; j < count; j++, index++) {
+                    // get this point's value
+                    if ((resp[byteOffset] & mask) == mask) {
+                        ret[index] = true;
+                    } else {
+                        ret[index] = false;
+                    }
+                    // advance the mask and offset index
+                    if ((mask <<= 1) == 0) {
+                        mask = 1;
+                        byteOffset++;
+                    }
+                }
+            } else {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_ADDRESS);
+            }
+
+            return ret;
+        }
+
+        @Override
+        public void writeSingleCoil(int unitAddr, int dataAddress, boolean data) throws ModbusProtocolException {
+            if (getConnectStatus() != KuraConnectionStatus.CONNECTED) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
+            }
+
+            byte[] resp;
+
+            byte[] cmd = new byte[6];
+            cmd[0] = (byte) unitAddr;
+            cmd[1] = ModbusFunctionCodes.FORCE_SINGLE_COIL;
+            cmd[2] = (byte) (dataAddress / 256);
+            cmd[3] = (byte) (dataAddress % 256);
+            cmd[4] = data == true ? (byte) 0xff : (byte) 0;
+            cmd[5] = 0;
+
+            /*
+             * send the message and get the response
+             */
+            resp = msgTransaction(cmd);
+
+            /*
+             * process the response
+             */
+            if (resp.length < 6) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
+            }
+            for (int i = 0; i < 6; i++) {
+                if (cmd[i] != resp[i]) {
+                    throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
+                }
+            }
+
+        }
+
+        @Override
+        public void writeMultipleCoils(int unitAddr, int dataAddress, boolean[] data) throws ModbusProtocolException {
+            if (getConnectStatus() != KuraConnectionStatus.CONNECTED) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
+            }
+
+            /*
+             * write multiple boolean values
+             */
+            int localCnt = data.length;
+            int index = 0;
+            byte[] resp;
+            /*
+             * construct the command, issue and verify response
+             */
+            int dataLength = (localCnt + 7) / 8;
+            byte[] cmd = new byte[dataLength + 7];
+            cmd[0] = (byte) unitAddr;
+            cmd[1] = ModbusFunctionCodes.FORCE_MULTIPLE_COILS;
+            cmd[2] = (byte) (dataAddress / 256);
+            cmd[3] = (byte) (dataAddress % 256);
+            cmd[4] = (byte) (localCnt / 256);
+            cmd[5] = (byte) (localCnt % 256);
+            cmd[6] = (byte) dataLength;
+
+            // put the data on the command
+            byte mask = 1;
+            int byteOffset = 7;
+            cmd[byteOffset] = 0;
+            for (int j = 0; j < localCnt; j++, index++) {
+                // get this point's value
+                if (data[index]) {
+                    cmd[byteOffset] += mask;
+                }
+                // advance the mask and offset index
+                if ((mask <<= 1) == 0) {
+                    mask = 1;
+                    byteOffset++;
+                    cmd[byteOffset] = 0;
+                }
+            }
+
+            /*
+             * send the message and get the response
+             */
+            resp = msgTransaction(cmd);
+
+            /*
+             * process the response
+             */
+            if (resp.length < 6) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
+            }
+            for (int j = 0; j < 6; j++) {
+                if (cmd[j] != resp[j]) {
+                    throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
+                }
+            }
+        }
+
+        @Override
+        public int[] readHoldingRegisters(int unitAddr, int dataAddress, int count) throws ModbusProtocolException {
+            if (getConnectStatus() != KuraConnectionStatus.CONNECTED) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
+            }
+
+            int[] ret = new int[count];
+            int index = 0;
+
+            byte[] resp;
+            /*
+             * construct the command issue and get results, putting the results
+             * away at index and then incrementing index for the next command
+             */
+            byte[] cmd = new byte[6];
+            cmd[0] = (byte) unitAddr;
+            cmd[1] = (byte) ModbusFunctionCodes.READ_HOLDING_REGS;
+            cmd[2] = (byte) (dataAddress / 256);
+            cmd[3] = (byte) (dataAddress % 256);
+            cmd[4] = 0;
+            cmd[5] = (byte) count;
+
+            /*
+             * send the message and get the response
+             */
+            resp = msgTransaction(cmd);
+
+            /*
+             * process the response (address & CRC already confirmed)
+             */
+            if (resp.length < 3 || resp.length < (resp[2] & 0xff) + 3) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
+            }
+            if ((resp[2] & 0xff) == count * 2) {
+                int byteOffset = 3;
+                for (int j = 0; j < count; j++, index++) {
+                    int val = resp[byteOffset + ModbusDataOrder.MODBUS_WORD_ORDER_BIG_ENDIAN.charAt(0) - '1'] & 0xff;
+                    val <<= 8;
+                    val += resp[byteOffset + ModbusDataOrder.MODBUS_WORD_ORDER_BIG_ENDIAN.charAt(1) - '1'] & 0xff;
+
+                    ret[index] = val;
+
+                    byteOffset += 2;
+                }
+            } else {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_ADDRESS);
+            }
+            return ret;
+        }
+
+        @Override
+        public int[] readInputRegisters(int unitAddr, int dataAddress, int count) throws ModbusProtocolException {
+            if (getConnectStatus() != KuraConnectionStatus.CONNECTED) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
+            }
+
+            int[] ret = new int[count];
+            int index = 0;
+
+            byte[] resp;
+            /*
+             * construct the command issue and get results, putting the results
+             * away at index and then incrementing index for the next command
+             */
+            byte[] cmd = new byte[6];
+            cmd[0] = (byte) unitAddr;
+            cmd[1] = (byte) ModbusFunctionCodes.READ_INPUT_REGS;
+            cmd[2] = (byte) (dataAddress / 256);
+            cmd[3] = (byte) (dataAddress % 256);
+            cmd[4] = 0;
+            cmd[5] = (byte) count;
+
+            /*
+             * send the message and get the response
+             */
+            resp = msgTransaction(cmd);
+
+            /*
+             * process the response (address & CRC already confirmed)
+             */
+            if (resp.length < 3 || resp.length < (resp[2] & 0xff) + 3) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
+            }
+            if ((resp[2] & 0xff) == count * 2) {
+                int byteOffset = 3;
+                for (int j = 0; j < count; j++, index++) {
+                    int val = resp[byteOffset + ModbusDataOrder.MODBUS_WORD_ORDER_BIG_ENDIAN.charAt(0) - '1'] & 0xff;
+                    val <<= 8;
+                    val += resp[byteOffset + ModbusDataOrder.MODBUS_WORD_ORDER_BIG_ENDIAN.charAt(1) - '1'] & 0xff;
+
+                    ret[index] = val;
+
+                    byteOffset += 2;
+                }
+            } else {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_ADDRESS);
+            }
+            return ret;
+        }
+
+        @Override
+        public void writeSingleRegister(int unitAddr, int dataAddress, int data) throws ModbusProtocolException {
+            if (getConnectStatus() != KuraConnectionStatus.CONNECTED) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
+            }
+
+            byte[] cmd = new byte[6];
+            cmd[0] = (byte) unitAddr;
+            cmd[1] = ModbusFunctionCodes.PRESET_SINGLE_REG;
+            cmd[2] = (byte) (dataAddress / 256);
+            cmd[3] = (byte) (dataAddress % 256);
+            cmd[4] = (byte) (data >> 8);
+            cmd[5] = (byte) data;
+
+            /*
+             * send the message and get the response
+             */
+            byte[] resp = msgTransaction(cmd);
+
+            /*
+             * process the response
+             */
+            if (resp.length < 6) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
+            }
+            for (int i = 0; i < 6; i++) {
+                if (cmd[i] != resp[i]) {
+                    throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
+                }
+            }
+        }
+
+        @Override
+        public void writeMultipleRegister(int unitAddr, int dataAddress, int[] data) throws ModbusProtocolException {
+            if (getConnectStatus() != KuraConnectionStatus.CONNECTED) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
+            }
+
+            int localCnt = data.length;
+            /*
+             * construct the command, issue and verify response
+             */
+            int dataLength = localCnt * 2;
+            byte[] cmd = new byte[dataLength + 7];
+            cmd[0] = (byte) unitAddr;
+            cmd[1] = ModbusFunctionCodes.PRESET_MULTIPLE_REGS;
+            cmd[2] = (byte) (dataAddress / 256);
+            cmd[3] = (byte) (dataAddress % 256);
+            cmd[4] = (byte) (localCnt / 256);
+            cmd[5] = (byte) (localCnt % 256);
+            cmd[6] = (byte) dataLength;
+
+            // put the data on the command
+            int byteOffset = 7;
+            int index = 0;
+            for (int j = 0; j < localCnt; j++, index++) {
+                cmd[byteOffset + ModbusDataOrder.MODBUS_WORD_ORDER_BIG_ENDIAN.charAt(0) - '1'] = (byte) (data[index] >> 8);
+                cmd[byteOffset + ModbusDataOrder.MODBUS_WORD_ORDER_BIG_ENDIAN.charAt(1) - '1'] = (byte) data[index];
+
+                byteOffset += 2;
+            }
+
+            /*
+             * send the message and get the response
+             */
+            byte[] resp = msgTransaction(cmd);
+
+            /*
+             * process the response
+             */
+            if (resp.length < 6) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
+            }
+            for (int j = 0; j < 6; j++) {
+                if (cmd[j] != resp[j]) {
+                    throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
+                }
+            }
+        }
+        
+        @Override
+        public boolean[] readExceptionStatus(int unitAddr) throws ModbusProtocolException {
+            if (getConnectStatus() != KuraConnectionStatus.CONNECTED) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
+            }
+
+            boolean[] ret = new boolean[8];
+            int index = 0;
+
+            byte[] resp;
+            /*
+             * construct the command issue and get results
+             */
+            byte[] cmd = new byte[2];
+            cmd[0] = (byte) unitAddr;
+            cmd[1] = (byte) ModbusFunctionCodes.READ_EXCEPTION_STATUS;
+
+            /*
+             * send the message and get the response
+             */
+            resp = msgTransaction(cmd);
+
+            /*
+             * process the response (address & CRC already confirmed)
+             */
+            if (resp.length < 3) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
+            }
+            byte mask = 1;
+            for (int j = 0; j < 8; j++, index++) {
+                // get this point's value
+                if ((resp[2] & mask) == mask) {
+                    ret[index] = true;
+                } else {
+                    ret[index] = false;
+                }
+                // advance the mask and offset index
+                if ((mask <<= 1) == 0) {
+                    mask = 1;
+                }
+            }
+
+            return ret;
+        }
+
+        @Override
+        public ModbusCommEvent getCommEventCounter(int unitAddr) throws ModbusProtocolException {
+            ModbusCommEvent mce = new ModbusCommEvent();
+            if (getConnectStatus() != KuraConnectionStatus.CONNECTED) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
+            }
+
+            /*
+             * construct the command issue and get results
+             */
+            byte[] cmd = new byte[2];
+            cmd[0] = (byte) unitAddr;
+            cmd[1] = (byte) ModbusFunctionCodes.GET_COMM_EVENT_COUNTER;
+
+            /*
+             * send the message and get the response
+             */
+            byte[] resp;
+            resp = msgTransaction(cmd);
+
+            /*
+             * process the response (address & CRC already confirmed)
+             */
+            if (resp.length < 6) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
+            }
+            int val = resp[2] & 0xff;
+            val <<= 8;
+            val += resp[3] & 0xff;
+            mce.setStatus(val);
+            val = resp[4] & 0xff;
+            val <<= 8;
+            val += resp[5] & 0xff;
+            mce.setEventCount(val);
+
+            return mce;
+        }
+
+        @Override
+        public ModbusCommEvent getCommEventLog(int unitAddr) throws ModbusProtocolException {
+            ModbusCommEvent mce = new ModbusCommEvent();
+            if (getConnectStatus() != KuraConnectionStatus.CONNECTED) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
+            }
+
+            /*
+             * construct the command issue and get results
+             */
+            byte[] cmd = new byte[2];
+            cmd[0] = (byte) unitAddr;
+            cmd[1] = (byte) ModbusFunctionCodes.GET_COMM_EVENT_LOG;
+
+            /*
+             * send the message and get the response
+             */
+            byte[] resp;
+            resp = msgTransaction(cmd);
+
+            /*
+             * process the response (address & CRC already confirmed)
+             */
+            if (resp.length < (resp[2] & 0xff) + 3 || (resp[2] & 0xff) > 64 + 7) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
+            }
+            int val = resp[3] & 0xff;
+            val <<= 8;
+            val += resp[4] & 0xff;
+            mce.setStatus(val);
+
+            val = resp[5] & 0xff;
+            val <<= 8;
+            val += resp[6] & 0xff;
+            mce.setEventCount(val);
+
+            val = resp[7] & 0xff;
+            val <<= 8;
+            val += resp[8] & 0xff;
+            mce.setMessageCount(val);
+
+            int count = (resp[2] & 0xff) - 4;
+            int[] events = new int[count];
+            for (int j = 0; j < count; j++) {
+                int bval = resp[9 + j] & 0xff;
+                events[j] = bval;
+            }
+            mce.setEvents(events);
+
+            return mce;
+        }
     }
 
     /**
@@ -325,31 +861,46 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
      * </table>
      * see {@link org.eclipse.kura.comm.CommConnection CommConnection} package for more detail.
      */
-    private final class SerialCommunicate extends Communicate {
+    private static final class SerialCommunicate extends Communicate {
 
-        InputStream in;
-        OutputStream out;
-        CommConnection conn = null;
-        boolean echo = false;
+        private InputStream in;
+        private OutputStream out;
+        private CommConnection conn = null;
+        private boolean echo = false;
+        private int respTout;
+        private int txMode;
         
         public SerialCommunicate(ConnectionFactory connFactory, Properties connectionConfig)
                 throws ModbusProtocolException {
             s_logger.info("Configure serial connection");
 
+            String txMode;
             String sPort;
             String sBaud;
             String sStop;
             String sParity;
             String sBits;
-
+            String respTimeout;
             if ((sPort = connectionConfig.getProperty("port")) == null
                     || (sBaud = connectionConfig.getProperty("baudRate")) == null
                     || (sStop = connectionConfig.getProperty("stopBits")) == null
                     || (sParity = connectionConfig.getProperty("parity")) == null
-                    || (sBits = connectionConfig.getProperty("bitsPerWord")) == null) {
+                    || (sBits = connectionConfig.getProperty("bitsPerWord")) == null
+                    || (respTimeout = connectionConfig.getProperty("respTimeout")) == null
+                    || (txMode = connectionConfig.getProperty("transmissionMode")) == null) {
                 throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_CONFIGURATION);
             }
 
+            this.respTout = Integer.parseInt(respTimeout);
+            if (this.respTout < 0) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_CONFIGURATION);
+            }
+
+            if (txMode.equals(ModbusTransmissionMode.RTU)) {
+                this.txMode = ModbusTransmissionMode.RTU_MODE;
+            } else {
+                this.txMode = ModbusTransmissionMode.ASCII_MODE;
+            }
             echo = Boolean.parseBoolean(connectionConfig.getProperty("echo"));
             
             int baud = Integer.valueOf(sBaud).intValue();
@@ -358,7 +909,7 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
             int bits = Integer.valueOf(sBits).intValue();
 
             String uri = new CommURI.Builder(sPort).withBaudRate(baud).withDataBits(bits).withStopBits(stop)
-                    .withParity(parity).withTimeout(2000).build().toString();
+                    .withParity(parity).withTimeout(respTout).build().toString();
 
             try {
                 this.conn = (CommConnection) connFactory.createConnection(uri, 1, false);
@@ -401,73 +952,12 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
             return KuraConnectionStatus.CONNECTED;
         }
 
-        private byte asciiLrcCalc(byte[] msg, int len) {
-            char[] ac = new char[2];
-            ac[0] = (char) msg[len - 4];
-            ac[1] = (char) msg[len - 3];
-            String s = new String(ac);
-            byte lrc = (byte) Integer.parseInt(s, 16);
-            return lrc;
-        }
-
-        private int binLrcCalc(byte[] msg) {
-            int llrc = 0;
-            for (byte element : msg) {
-                llrc += element & 0xff;
-            }
-            llrc = (llrc ^ 0xff) + 1;
-            // byte lrc=(byte)(llrc & 0x0ff);
-            return llrc;
-        }
-
-        /**
-         * convertCommandToAscii: convert a binary command into a standard Modbus
-         * ASCII frame
-         */
-        private byte[] convertCommandToAscii(byte[] msg) {
-            int lrc = binLrcCalc(msg);
-
-            char[] hexArray = "0123456789ABCDEF".toCharArray();
-            byte[] ab = new byte[msg.length * 2 + 5];
-            ab[0] = ':';
-            int v;
-            for (int i = 0; i < msg.length; i++) {
-                v = msg[i] & 0xff;
-                ab[i * 2 + 1] = (byte) hexArray[v >>> 4];
-                ab[i * 2 + 2] = (byte) hexArray[v & 0x0f];
-            }
-            v = lrc & 0x0ff;
-            ab[ab.length - 4] = (byte) hexArray[v >>> 4];
-            ab[ab.length - 3] = (byte) hexArray[v & 0x0f];
-            ab[ab.length - 2] = 13;
-            ab[ab.length - 1] = 10;
-            return ab;
-        }
-
-        /**
-         * convertAsciiResponseToBin: convert a standard Modbus frame to
-         * byte array
-         */
-        private byte[] convertAsciiResponseToBin(byte[] msg, int len) {
-            int l = (len - 5) / 2;
-            byte[] ab = new byte[l];
-            char[] ac = new char[2];
-            // String s=new String(msg);
-            for (int i = 0; i < l; i++) {
-                ac[0] = (char) msg[i * 2 + 1];
-                ac[1] = (char) msg[i * 2 + 2];
-                // String s=new String(ac);
-                ab[i] = (byte) Integer.parseInt(new String(ac), 16);
-            }
-            return ab;
-        }
-
         private void discardRequestEcho(byte[] cmd) throws ModbusProtocolException {
             int echoIndex = 0;
             try {
                 byte[] echoData = new byte[cmd.length];
                 while (echoIndex < cmd.length) {
-                    int timeOut = ModbusProtocolDevice.this.m_respTout;
+                    int timeOut = this.respTout;
                     long start = System.currentTimeMillis();
                     while (this.in.available() == 0) {
                         try {
@@ -514,7 +1004,7 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
 
             byte[] cmd = null;
 
-            if (ModbusProtocolDevice.this.m_txMode == ModbusTransmissionMode.RTU_MODE) {
+            if (this.txMode == ModbusTransmissionMode.RTU_MODE) {
                 cmd = new byte[msg.length + 2];
                 for (int i = 0; i < msg.length; i++) {
                     cmd[i] = msg[i];
@@ -523,7 +1013,7 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
                 int crc = Crc16.getCrc16(msg, msg.length, 0x0ffff);
                 cmd[msg.length] = (byte) crc;
                 cmd[msg.length + 1] = (byte) (crc >> 8);
-            } else if (ModbusProtocolDevice.this.m_txMode == ModbusTransmissionMode.ASCII_MODE) {
+            } else if (this.txMode == ModbusTransmissionMode.ASCII_MODE) {
                 cmd = convertCommandToAscii(msg);
             }
 
@@ -548,10 +1038,10 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
                         byte[] response = new byte[262]; // response buffer
                         int respIndex = 0;
                         int minimumLength = 5; // default minimum message length
-                        if (ModbusProtocolDevice.this.m_txMode == ModbusTransmissionMode.ASCII_MODE) {
+                        if (this.txMode == ModbusTransmissionMode.ASCII_MODE) {
                             minimumLength = 11;
                         }
-                        int timeOut = ModbusProtocolDevice.this.m_respTout;
+                        int timeOut = this.respTout;
                         for (int maxLoop = 0; maxLoop < 1000; maxLoop++) {
                             boolean endFrame = false;
                             // while (respIndex < minimumLength) {
@@ -559,7 +1049,7 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
                                 long start = System.currentTimeMillis();
                                 while (this.in.available() == 0) {
                                     try {
-                                        Thread.sleep(5);	// avoid a high cpu load
+                                        Thread.sleep(5);    // avoid a high cpu load
                                     } catch (InterruptedException e) {
                                         throw new ModbusProtocolException(ModbusProtocolErrorCode.TRANSACTION_FAILURE,
                                                 "Thread interrupted");
@@ -576,7 +1066,7 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
                                 }
                                 // address byte must match first
                                 if (respIndex == 0) {
-                                    if (ModbusProtocolDevice.this.m_txMode == ModbusTransmissionMode.ASCII_MODE) {
+                                    if (this.txMode == ModbusTransmissionMode.ASCII_MODE) {
                                         if ((response[0] = (byte) this.in.read()) == ':') {
                                             respIndex++;
                                         }
@@ -589,7 +1079,7 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
                                     response[respIndex++] = (byte) this.in.read();
                                 }
 
-                                if (ModbusProtocolDevice.this.m_txMode == ModbusTransmissionMode.RTU_MODE) {
+                                if (this.txMode == ModbusTransmissionMode.RTU_MODE) {
                                     timeOut = 100; // move to character timeout
                                     if (respIndex >= minimumLength) {
                                         endFrame = true;
@@ -601,7 +1091,7 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
                                 }
                             }
                             // if ASCII mode convert response
-                            if (ModbusProtocolDevice.this.m_txMode == ModbusTransmissionMode.ASCII_MODE) {
+                            if (this.txMode == ModbusTransmissionMode.ASCII_MODE) {
                                 byte lrcRec = asciiLrcCalc(response, respIndex);
                                 response = convertAsciiResponseToBin(response, respIndex);
                                 byte lrcCalc = (byte) binLrcCalc(response);
@@ -613,7 +1103,7 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
 
                             // Check first for an Exception response
                             if ((response[1] & 0x80) == 0x80) {
-                                if (ModbusProtocolDevice.this.m_txMode == ModbusTransmissionMode.ASCII_MODE
+                                if (this.txMode == ModbusTransmissionMode.ASCII_MODE
                                         || Crc16.getCrc16(response, 5, 0xffff) == 0) {
                                     throw new ModbusProtocolException(ModbusProtocolErrorCode.TRANSACTION_FAILURE,
                                             "Exception response = " + Byte.toString(response[2]));
@@ -628,7 +1118,7 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
                                     if (respIndex < 8) {
                                         // wait for more data
                                         minimumLength = 8;
-                                    } else if (ModbusProtocolDevice.this.m_txMode == ModbusTransmissionMode.ASCII_MODE
+                                    } else if (this.txMode == ModbusTransmissionMode.ASCII_MODE
                                             || Crc16.getCrc16(response, 8, 0xffff) == 0) {
                                         byte[] ret = new byte[6];
                                         for (int i = 0; i < 6; i++) {
@@ -642,7 +1132,7 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
                                 case ModbusFunctionCodes.READ_INPUT_REGS:
                                 case ModbusFunctionCodes.READ_HOLDING_REGS:
                                     int byteCnt;
-                                    if (ModbusProtocolDevice.this.m_txMode == ModbusTransmissionMode.ASCII_MODE) {
+                                    if (this.txMode == ModbusTransmissionMode.ASCII_MODE) {
                                         byteCnt = (response[2] & 0xff) + 3;
                                     } else {
                                         byteCnt = (response[2] & 0xff) + 5;
@@ -650,7 +1140,7 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
                                     if (respIndex < byteCnt) {
                                         // wait for more data
                                         minimumLength = byteCnt;
-                                    } else if (ModbusProtocolDevice.this.m_txMode == ModbusTransmissionMode.ASCII_MODE
+                                    } else if (this.txMode == ModbusTransmissionMode.ASCII_MODE
                                             || Crc16.getCrc16(response, byteCnt, 0xffff) == 0) {
                                         byte[] ret = new byte[byteCnt];
                                         for (int i = 0; i < byteCnt; i++) {
@@ -687,54 +1177,82 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
     /**
      * Installation of an ethernet connection to communicate
      */
-    private final class EthernetCommunicate extends Communicate {
+    private static final class EthernetCommunicate extends Communicate {
 
-        InputStream inputStream;
-        OutputStream outputStream;
-        Socket socket;
-        int port;
-        String ipAddress;
-        String connType;
-        boolean connected = false;
+        private static int transactionIndex = 0;
+        private InputStream inputStream;
+        private OutputStream outputStream;
+        private Socket socket;
+        private int port;
+        private String ipAddress;
+        private String connType;
+        private int respTout;
+        private int txMode;
+        private boolean connected = false;
+        private boolean neverConnected = true;
 
         public EthernetCommunicate(ConnectionFactory connFactory, Properties connectionConfig)
                 throws ModbusProtocolException {
             s_logger.debug("Configure TCP connection");
             String sPort;
             this.connType = connectionConfig.getProperty("connectionType");
-
+            String responseTimeout = null;
+            String txMode;
             if ((sPort = connectionConfig.getProperty("ethport")) == null
-                    || (this.ipAddress = connectionConfig.getProperty("ipAddress")) == null) {
+                    || (txMode = connectionConfig.getProperty("transmissionMode")) == null
+                    || (this.ipAddress = connectionConfig.getProperty("ipAddress")) == null
+                    || (responseTimeout = connectionConfig.getProperty("respTimeout")) == null) {
                 throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_CONFIGURATION);
             }
+            
+            this.respTout = Integer.parseInt(responseTimeout);
+            if (this.respTout < 0) {
+                throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_CONFIGURATION);
+            }
+            
+            if (txMode.equals(ModbusTransmissionMode.RTU)) {
+                this.txMode = ModbusTransmissionMode.RTU_MODE;
+            } else {
+                this.txMode = ModbusTransmissionMode.ASCII_MODE;
+            }
+            
             this.port = Integer.valueOf(sPort).intValue();
-            ModbusProtocolDevice.this.m_connConfigd = true;
             this.socket = new Socket();
         }
 
+        /**
+         * Calculates and returns the next transaction index for Modbus TCP.
+         * 
+         * @return the next transaction index.
+         */
+        private int getNextTransactionIndex() {
+            transactionIndex++;
+            if (transactionIndex > 0xffff) {
+                transactionIndex = 0;
+            }
+            return transactionIndex;
+        }
+        
         @Override
         public void connect() {
-            if (!ModbusProtocolDevice.this.m_connConfigd) {
-                s_logger.error("Can't connect, port not configured");
-            } else {
-                if (!this.connected) {
+            this.neverConnected = false;
+            if (!this.connected) {
+                try {
+                    this.socket = new Socket();
+                    this.socket.connect(new InetSocketAddress(this.ipAddress, this.port), 
+                        this.respTout);
                     try {
-                        this.socket = new Socket();
-                        this.socket.connect(new InetSocketAddress(this.ipAddress, this.port), 
-                            ModbusProtocolDevice.this.m_respTout);
-                        try {
-                            this.inputStream = this.socket.getInputStream();
-                            this.outputStream = this.socket.getOutputStream();
-                            this.connected = true;
-                            s_logger.info("TCP connected");
-                        } catch (IOException e) {
-                            disconnect();
-                            s_logger.error("Failed to get socket streams: " + e);
-                        }
+                        this.inputStream = this.socket.getInputStream();
+                        this.outputStream = this.socket.getOutputStream();
+                        this.connected = true;
+                        s_logger.info("TCP connected");
                     } catch (IOException e) {
-                        this.socket = null;
-                        s_logger.error("Failed to connect to remote: " + e);
+                        disconnect();
+                        s_logger.error("Failed to get socket streams: " + e);
                     }
+                } catch (IOException e) {
+                    this.socket = null;
+                    s_logger.error("Failed to connect to remote: " + e);
                 }
             }
         }
@@ -744,35 +1262,33 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
             if(this.socket==null){
                 return;
             }
-            if (ModbusProtocolDevice.this.m_connConfigd) {
-                if (this.connected) {
-                    try {
-                        if (!this.socket.isInputShutdown()) {
-                            this.socket.shutdownInput();
-                        }
-                        if (!this.socket.isOutputShutdown()) {
-                            this.socket.shutdownOutput();
-                        }
-                        this.socket.close();
-                    } catch (IOException eClose) {
-                        s_logger.error("Error closing TCP: " + eClose);
+            if (this.connected) {
+                try {
+                    if (!this.socket.isInputShutdown()) {
+                        this.socket.shutdownInput();
                     }
-                    this.inputStream = null;
-                    this.outputStream = null;
-                    this.connected = false;
-                    this.socket = null;
+                    if (!this.socket.isOutputShutdown()) {
+                        this.socket.shutdownOutput();
+                    }
+                    this.socket.close();
+                } catch (IOException eClose) {
+                    s_logger.error("Error closing TCP: " + eClose);
                 }
+                this.inputStream = null;
+                this.outputStream = null;
+                this.connected = false;
+                this.socket = null;
             }
         }
 
         @Override
         public int getConnectStatus() {
-            if (this.connected) {
-                return KuraConnectionStatus.CONNECTED;
-            } else if (ModbusProtocolDevice.this.m_connConfigd) {
-                return KuraConnectionStatus.DISCONNECTED;
-            } else {
+            if (this.neverConnected) {
                 return KuraConnectionStatus.NEVERCONNECTED;
+            } else if (this.connected) {
+                return KuraConnectionStatus.CONNECTED;
+            } else {
+                return KuraConnectionStatus.DISCONNECTED;
             }
         }
 
@@ -782,7 +1298,7 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
 
             // ---------------------------------------------- Send Message
             // ---------------------------------------------------
-            if (ModbusProtocolDevice.this.m_txMode == ModbusTransmissionMode.RTU_MODE) {
+            if (this.txMode == ModbusTransmissionMode.RTU_MODE) {
                 if (PROTOCOL_CONNECTION_TYPE_ETHER_TCP.equals(this.connType)) {
                     cmd = new byte[msg.length + 6];
                     // build MBAP header
@@ -851,7 +1367,7 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
             }
             while (!endFrame) {
                 try {
-                    this.socket.setSoTimeout(ModbusProtocolDevice.this.m_respTout);
+                    this.socket.setSoTimeout(this.respTout);
                     int resp = this.inputStream.read(response, respIndex, 1);
                     if (resp > 0) {
                         respIndex += resp;
@@ -929,540 +1445,6 @@ public class ModbusProtocolDevice implements ModbusProtocolDeviceService {
             }
             return null;
         }
-    }
-
-    @Override
-    public boolean[] readCoils(int unitAddr, int dataAddress, int count) throws ModbusProtocolException {
-        if (!this.m_connConfigd) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
-        }
-
-        boolean[] ret = new boolean[count];
-        int index = 0;
-
-        byte[] resp;
-        /*
-         * construct the command issue and get results
-         */
-        byte[] cmd = new byte[6];
-        cmd[0] = (byte) unitAddr;
-        cmd[1] = (byte) ModbusFunctionCodes.READ_COIL_STATUS;
-        cmd[2] = (byte) (dataAddress / 256);
-        cmd[3] = (byte) (dataAddress % 256);
-        cmd[4] = (byte) (count / 256);
-        cmd[5] = (byte) (count % 256);
-
-        /*
-         * send the message and get the response
-         */
-        resp = this.m_comm.msgTransaction(cmd);
-
-        /*
-         * process the response (address & CRC already confirmed)
-         */
-        if (resp.length < 3 || resp.length < (resp[2] & 0xff) + 3) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
-        }
-        if ((resp[2] & 0xff) == (count + 7) / 8) {
-            byte mask = 1;
-            int byteOffset = 3;
-            for (int j = 0; j < count; j++, index++) {
-                // get this point's value
-                if ((resp[byteOffset] & mask) == mask) {
-                    ret[index] = true;
-                } else {
-                    ret[index] = false;
-                }
-                // advance the mask and offset index
-                if ((mask <<= 1) == 0) {
-                    mask = 1;
-                    byteOffset++;
-                }
-            }
-        } else {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_ADDRESS);
-        }
-
-        return ret;
-    }
-
-    @Override
-    public boolean[] readDiscreteInputs(int unitAddr, int dataAddress, int count) throws ModbusProtocolException {
-        if (!this.m_connConfigd) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
-        }
-
-        boolean[] ret = new boolean[count];
-        int index = 0;
-
-        byte[] resp;
-        /*
-         * construct the command issue and get results
-         */
-        byte[] cmd = new byte[6];
-        cmd[0] = (byte) unitAddr;
-        cmd[1] = (byte) ModbusFunctionCodes.READ_INPUT_STATUS;
-        cmd[2] = (byte) (dataAddress / 256);
-        cmd[3] = (byte) (dataAddress % 256);
-        cmd[4] = (byte) (count / 256);
-        cmd[5] = (byte) (count % 256);
-
-        /*
-         * send the message and get the response
-         */
-        resp = this.m_comm.msgTransaction(cmd);
-
-        /*
-         * process the response (address & CRC already confirmed)
-         */
-        if (resp.length < 3 || resp.length < (resp[2] & 0xff) + 3) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
-        }
-        if ((resp[2] & 0xff) == (count + 7) / 8) {
-            byte mask = 1;
-            int byteOffset = 3;
-            for (int j = 0; j < count; j++, index++) {
-                // get this point's value
-                if ((resp[byteOffset] & mask) == mask) {
-                    ret[index] = true;
-                } else {
-                    ret[index] = false;
-                }
-                // advance the mask and offset index
-                if ((mask <<= 1) == 0) {
-                    mask = 1;
-                    byteOffset++;
-                }
-            }
-        } else {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_ADDRESS);
-        }
-
-        return ret;
-    }
-
-    @Override
-    public void writeSingleCoil(int unitAddr, int dataAddress, boolean data) throws ModbusProtocolException {
-        if (!this.m_connConfigd) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
-        }
-
-        byte[] resp;
-
-        byte[] cmd = new byte[6];
-        cmd[0] = (byte) unitAddr;
-        cmd[1] = ModbusFunctionCodes.FORCE_SINGLE_COIL;
-        cmd[2] = (byte) (dataAddress / 256);
-        cmd[3] = (byte) (dataAddress % 256);
-        cmd[4] = data == true ? (byte) 0xff : (byte) 0;
-        cmd[5] = 0;
-
-        /*
-         * send the message and get the response
-         */
-        resp = this.m_comm.msgTransaction(cmd);
-
-        /*
-         * process the response
-         */
-        if (resp.length < 6) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
-        }
-        for (int i = 0; i < 6; i++) {
-            if (cmd[i] != resp[i]) {
-                throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
-            }
-        }
-
-    }
-
-    @Override
-    public void writeMultipleCoils(int unitAddr, int dataAddress, boolean[] data) throws ModbusProtocolException {
-        if (!this.m_connConfigd) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
-        }
-
-        /*
-         * write multiple boolean values
-         */
-        int localCnt = data.length;
-        int index = 0;
-        byte[] resp;
-        /*
-         * construct the command, issue and verify response
-         */
-        int dataLength = (localCnt + 7) / 8;
-        byte[] cmd = new byte[dataLength + 7];
-        cmd[0] = (byte) unitAddr;
-        cmd[1] = ModbusFunctionCodes.FORCE_MULTIPLE_COILS;
-        cmd[2] = (byte) (dataAddress / 256);
-        cmd[3] = (byte) (dataAddress % 256);
-        cmd[4] = (byte) (localCnt / 256);
-        cmd[5] = (byte) (localCnt % 256);
-        cmd[6] = (byte) dataLength;
-
-        // put the data on the command
-        byte mask = 1;
-        int byteOffset = 7;
-        cmd[byteOffset] = 0;
-        for (int j = 0; j < localCnt; j++, index++) {
-            // get this point's value
-            if (data[index]) {
-                cmd[byteOffset] += mask;
-            }
-            // advance the mask and offset index
-            if ((mask <<= 1) == 0) {
-                mask = 1;
-                byteOffset++;
-                cmd[byteOffset] = 0;
-            }
-        }
-
-        /*
-         * send the message and get the response
-         */
-        resp = this.m_comm.msgTransaction(cmd);
-
-        /*
-         * process the response
-         */
-        if (resp.length < 6) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
-        }
-        for (int j = 0; j < 6; j++) {
-            if (cmd[j] != resp[j]) {
-                throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
-            }
-        }
-    }
-
-    @Override
-    public int[] readHoldingRegisters(int unitAddr, int dataAddress, int count) throws ModbusProtocolException {
-        if (!this.m_connConfigd) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
-        }
-
-        int[] ret = new int[count];
-        int index = 0;
-
-        byte[] resp;
-        /*
-         * construct the command issue and get results, putting the results
-         * away at index and then incrementing index for the next command
-         */
-        byte[] cmd = new byte[6];
-        cmd[0] = (byte) unitAddr;
-        cmd[1] = (byte) ModbusFunctionCodes.READ_HOLDING_REGS;
-        cmd[2] = (byte) (dataAddress / 256);
-        cmd[3] = (byte) (dataAddress % 256);
-        cmd[4] = 0;
-        cmd[5] = (byte) count;
-
-        /*
-         * send the message and get the response
-         */
-        resp = this.m_comm.msgTransaction(cmd);
-
-        /*
-         * process the response (address & CRC already confirmed)
-         */
-        if (resp.length < 3 || resp.length < (resp[2] & 0xff) + 3) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
-        }
-        if ((resp[2] & 0xff) == count * 2) {
-            int byteOffset = 3;
-            for (int j = 0; j < count; j++, index++) {
-                int val = resp[byteOffset + ModbusDataOrder.MODBUS_WORD_ORDER_BIG_ENDIAN.charAt(0) - '1'] & 0xff;
-                val <<= 8;
-                val += resp[byteOffset + ModbusDataOrder.MODBUS_WORD_ORDER_BIG_ENDIAN.charAt(1) - '1'] & 0xff;
-
-                ret[index] = val;
-
-                byteOffset += 2;
-            }
-        } else {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_ADDRESS);
-        }
-        return ret;
-    }
-
-    @Override
-    public int[] readInputRegisters(int unitAddr, int dataAddress, int count) throws ModbusProtocolException {
-
-        if (!this.m_connConfigd) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
-        }
-
-        int[] ret = new int[count];
-        int index = 0;
-
-        byte[] resp;
-        /*
-         * construct the command issue and get results, putting the results
-         * away at index and then incrementing index for the next command
-         */
-        byte[] cmd = new byte[6];
-        cmd[0] = (byte) unitAddr;
-        cmd[1] = (byte) ModbusFunctionCodes.READ_INPUT_REGS;
-        cmd[2] = (byte) (dataAddress / 256);
-        cmd[3] = (byte) (dataAddress % 256);
-        cmd[4] = 0;
-        cmd[5] = (byte) count;
-
-        /*
-         * send the message and get the response
-         */
-        resp = this.m_comm.msgTransaction(cmd);
-
-        /*
-         * process the response (address & CRC already confirmed)
-         */
-        if (resp.length < 3 || resp.length < (resp[2] & 0xff) + 3) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
-        }
-        if ((resp[2] & 0xff) == count * 2) {
-            int byteOffset = 3;
-            for (int j = 0; j < count; j++, index++) {
-                int val = resp[byteOffset + ModbusDataOrder.MODBUS_WORD_ORDER_BIG_ENDIAN.charAt(0) - '1'] & 0xff;
-                val <<= 8;
-                val += resp[byteOffset + ModbusDataOrder.MODBUS_WORD_ORDER_BIG_ENDIAN.charAt(1) - '1'] & 0xff;
-
-                ret[index] = val;
-
-                byteOffset += 2;
-            }
-        } else {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_ADDRESS);
-        }
-        return ret;
-    }
-
-    @Override
-    public void writeSingleRegister(int unitAddr, int dataAddress, int data) throws ModbusProtocolException {
-        if (!this.m_connConfigd) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
-        }
-
-        byte[] cmd = new byte[6];
-        cmd[0] = (byte) unitAddr;
-        cmd[1] = ModbusFunctionCodes.PRESET_SINGLE_REG;
-        cmd[2] = (byte) (dataAddress / 256);
-        cmd[3] = (byte) (dataAddress % 256);
-        cmd[4] = (byte) (data >> 8);
-        cmd[5] = (byte) data;
-
-        /*
-         * send the message and get the response
-         */
-        byte[] resp = this.m_comm.msgTransaction(cmd);
-
-        /*
-         * process the response
-         */
-        if (resp.length < 6) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
-        }
-        for (int i = 0; i < 6; i++) {
-            if (cmd[i] != resp[i]) {
-                throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
-            }
-        }
-    }
-
-    @Override
-    public void writeMultipleRegister(int unitAddr, int dataAddress, int[] data) throws ModbusProtocolException {
-        if (!this.m_connConfigd) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
-        }
-
-        int localCnt = data.length;
-        /*
-         * construct the command, issue and verify response
-         */
-        int dataLength = localCnt * 2;
-        byte[] cmd = new byte[dataLength + 7];
-        cmd[0] = (byte) unitAddr;
-        cmd[1] = ModbusFunctionCodes.PRESET_MULTIPLE_REGS;
-        cmd[2] = (byte) (dataAddress / 256);
-        cmd[3] = (byte) (dataAddress % 256);
-        cmd[4] = (byte) (localCnt / 256);
-        cmd[5] = (byte) (localCnt % 256);
-        cmd[6] = (byte) dataLength;
-
-        // put the data on the command
-        int byteOffset = 7;
-        int index = 0;
-        for (int j = 0; j < localCnt; j++, index++) {
-            cmd[byteOffset + ModbusDataOrder.MODBUS_WORD_ORDER_BIG_ENDIAN.charAt(0) - '1'] = (byte) (data[index] >> 8);
-            cmd[byteOffset + ModbusDataOrder.MODBUS_WORD_ORDER_BIG_ENDIAN.charAt(1) - '1'] = (byte) data[index];
-
-            byteOffset += 2;
-        }
-
-        /*
-         * send the message and get the response
-         */
-        byte[] resp = this.m_comm.msgTransaction(cmd);
-
-        /*
-         * process the response
-         */
-        if (resp.length < 6) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
-        }
-        for (int j = 0; j < 6; j++) {
-            if (cmd[j] != resp[j]) {
-                throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
-            }
-        }
-    }
-
-    @Override
-    public boolean[] readExceptionStatus(int unitAddr) throws ModbusProtocolException {
-        if (!this.m_connConfigd) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
-        }
-
-        boolean[] ret = new boolean[8];
-        int index = 0;
-
-        byte[] resp;
-        /*
-         * construct the command issue and get results
-         */
-        byte[] cmd = new byte[2];
-        cmd[0] = (byte) unitAddr;
-        cmd[1] = (byte) ModbusFunctionCodes.READ_EXCEPTION_STATUS;
-
-        /*
-         * send the message and get the response
-         */
-        resp = this.m_comm.msgTransaction(cmd);
-
-        /*
-         * process the response (address & CRC already confirmed)
-         */
-        if (resp.length < 3) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
-        }
-        byte mask = 1;
-        for (int j = 0; j < 8; j++, index++) {
-            // get this point's value
-            if ((resp[2] & mask) == mask) {
-                ret[index] = true;
-            } else {
-                ret[index] = false;
-            }
-            // advance the mask and offset index
-            if ((mask <<= 1) == 0) {
-                mask = 1;
-            }
-        }
-
-        return ret;
-    }
-
-    @Override
-    public ModbusCommEvent getCommEventCounter(int unitAddr) throws ModbusProtocolException {
-        ModbusCommEvent mce = new ModbusCommEvent();
-        if (!this.m_connConfigd) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
-        }
-
-        /*
-         * construct the command issue and get results
-         */
-        byte[] cmd = new byte[2];
-        cmd[0] = (byte) unitAddr;
-        cmd[1] = (byte) ModbusFunctionCodes.GET_COMM_EVENT_COUNTER;
-
-        /*
-         * send the message and get the response
-         */
-        byte[] resp;
-        resp = this.m_comm.msgTransaction(cmd);
-
-        /*
-         * process the response (address & CRC already confirmed)
-         */
-        if (resp.length < 6) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
-        }
-        int val = resp[2] & 0xff;
-        val <<= 8;
-        val += resp[3] & 0xff;
-        mce.setStatus(val);
-        val = resp[4] & 0xff;
-        val <<= 8;
-        val += resp[5] & 0xff;
-        mce.setEventCount(val);
-
-        return mce;
-    }
-
-    @Override
-    public ModbusCommEvent getCommEventLog(int unitAddr) throws ModbusProtocolException {
-        ModbusCommEvent mce = new ModbusCommEvent();
-        if (!this.m_connConfigd) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.NOT_CONNECTED);
-        }
-
-        /*
-         * construct the command issue and get results
-         */
-        byte[] cmd = new byte[2];
-        cmd[0] = (byte) unitAddr;
-        cmd[1] = (byte) ModbusFunctionCodes.GET_COMM_EVENT_LOG;
-
-        /*
-         * send the message and get the response
-         */
-        byte[] resp;
-        resp = this.m_comm.msgTransaction(cmd);
-
-        /*
-         * process the response (address & CRC already confirmed)
-         */
-        if (resp.length < (resp[2] & 0xff) + 3 || (resp[2] & 0xff) > 64 + 7) {
-            throw new ModbusProtocolException(ModbusProtocolErrorCode.INVALID_DATA_TYPE);
-        }
-        int val = resp[3] & 0xff;
-        val <<= 8;
-        val += resp[4] & 0xff;
-        mce.setStatus(val);
-
-        val = resp[5] & 0xff;
-        val <<= 8;
-        val += resp[6] & 0xff;
-        mce.setEventCount(val);
-
-        val = resp[7] & 0xff;
-        val <<= 8;
-        val += resp[8] & 0xff;
-        mce.setMessageCount(val);
-
-        int count = (resp[2] & 0xff) - 4;
-        int[] events = new int[count];
-        for (int j = 0; j < count; j++) {
-            int bval = resp[9 + j] & 0xff;
-            events[j] = bval;
-        }
-        mce.setEvents(events);
-
-        return mce;
-    }
-
-    /**
-     * Calculates and returns the next transaction index for Modbus TCP.
-     * 
-     * @return the next transaction index.
-     */
-    private int getNextTransactionIndex() {
-        transactionIndex++;
-        if (transactionIndex > 0xffff) {
-            transactionIndex = 0;
-        }
-        return transactionIndex;
     }
 
 }
